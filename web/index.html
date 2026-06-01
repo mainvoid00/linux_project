@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RPi 원격 장치 제어</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0; --muted:#94a3b8;
+          --on:#22c55e; --off:#ef4444; --accent:#38bdf8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:18px; }
+  header span { color:var(--muted); font-size:13px; }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card h2 { margin:0 0 10px; font-size:15px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button { flex:1; min-width:70px; padding:9px 12px; border:0; border-radius:8px; cursor:pointer;
+           font-size:14px; font-weight:600; color:#0f172a; background:var(--accent); }
+  button.on { background:var(--on); }
+  button.off { background:var(--off); color:#fff; }
+  button:active { transform:translateY(1px); }
+  .value { font-size:13px; color:var(--muted); margin-top:8px; }
+  .value b { color:var(--txt); }
+  #log { height:180px; overflow:auto; background:#0b1220; border:1px solid var(--line);
+         border-radius:8px; padding:8px; font-family:ui-monospace,monospace; font-size:12px; }
+  #log div { white-space:pre-wrap; line-height:1.5; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--off); margin-right:6px; }
+  .dot.live { background:var(--on); }
+</style>
+</head>
+<body>
+<header>
+  <h1>RPi 원격 장치 제어</h1>
+  <span id="conn"><span class="dot" id="connDot"></span>상태: 연결 확인 중…</span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>LED</h2>
+    <div class="row">
+      <button class="on" onclick="ctl('/led/on')">ON</button>
+      <button class="off" onclick="ctl('/led/off')">OFF</button>
+    </div>
+    <div class="value">모드: <b id="ledState">-</b></div>
+  </section>
+
+  <section class="card">
+    <h2>LED Blink (1초 점멸)</h2>
+    <div class="row">
+      <button class="on" onclick="ctl('/led/blink/on')">ON</button>
+      <button class="off" onclick="ctl('/led/blink/off')">OFF</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>조도 센서 (자동)</h2>
+    <div class="row">
+      <button class="on" onclick="ctl('/cds/on')">ON</button>
+      <button class="off" onclick="ctl('/cds/off')">OFF</button>
+    </div>
+    <div class="value">현재: <b id="cdsVal">-</b></div>
+  </section>
+
+  <section class="card">
+    <h2>부저 (멜로디)</h2>
+    <div class="row">
+      <button class="on" onclick="ctl('/buzzer/on')">ON</button>
+      <button class="off" onclick="ctl('/buzzer/off')">OFF</button>
+    </div>
+    <div class="value">상태: <b id="buzState">-</b></div>
+  </section>
+
+  <section class="card">
+    <h2>7세그먼트 (1초 증가)</h2>
+    <div class="row">
+      <button class="on" onclick="ctl('/fnd/on')">ON</button>
+      <button class="off" onclick="ctl('/fnd/off')">OFF</button>
+    </div>
+    <div class="value">카운터: <b id="fndVal">-</b></div>
+  </section>
+
+  <section class="card" style="grid-column:1/-1;">
+    <h2>로그 모니터링</h2>
+    <div class="row" style="margin-bottom:10px;">
+      <button class="on" style="flex:0 0 90px;" onclick="ctl('/log/on')">ON</button>
+      <button class="off" style="flex:0 0 90px;" onclick="ctl('/log/off')">OFF</button>
+      <button style="flex:0 0 90px; background:var(--muted); color:#0f172a;" onclick="clearLog()">CLEAR</button>
+    </div>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+// 제어: POST 요청 후 응답을 로그에 남기고 상태 갱신
+async function ctl(path) {
+  try {
+    const res = await fetch(path, { method: 'POST' });
+    const data = await res.json();
+    logLine(`> POST ${path} → ${res.status} ${JSON.stringify(data)}`);
+    refreshStatus();
+  } catch (e) {
+    logLine(`> POST ${path} 실패: ${e.message}`);
+  }
+}
+
+// 상태 조회: GET /status
+async function refreshStatus() {
+  try {
+    const res = await fetch('/status');
+    const s = await res.json();
+    setConn(true);
+    document.getElementById('ledState').textContent = s.led ?? '-';
+    document.getElementById('buzState').textContent = s.buzzer ?? '-';
+    document.getElementById('fndVal').textContent =
+      s.fnd && s.fnd.active ? s.fnd.count : 'off';
+    if (s.cds && s.cds.active) {
+      document.getElementById('cdsVal').textContent = `${s.cds.value} (${s.cds.state})`;
+    } else {
+      document.getElementById('cdsVal').textContent = 'off';
+    }
+  } catch (e) {
+    setConn(false);
+  }
+}
+
+function setConn(ok) {
+  document.getElementById('connDot').className = 'dot' + (ok ? ' live' : '');
+  document.getElementById('conn').lastChild.textContent =
+    ok ? '상태: 연결됨' : '상태: 서버 응답 없음';
+}
+
+// 로그 영역
+function logLine(text) {
+  const box = document.getElementById('log');
+  const div = document.createElement('div');
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+function clearLog() { document.getElementById('log').innerHTML = ''; }
+
+// SSE: 조도 실시간 스트림
+const cds = new EventSource('/cds/stream');
+cds.addEventListener('cds', (ev) => {
+  const d = JSON.parse(ev.data);
+  document.getElementById('cdsVal').textContent = `${d.value} (${d.state})`;
+});
+
+// SSE: 서버 로그 스트림
+const log = new EventSource('/log/stream');
+log.addEventListener('log', (ev) => {
+  const d = JSON.parse(ev.data);
+  logLine(`[${d.time}] ${d.level} ${d.msg}`);
+});
+
+// 초기 상태 + 주기 갱신
+refreshStatus();
+setInterval(refreshStatus, 2000);
+</script>
+</body>
+</html>
