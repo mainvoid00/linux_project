@@ -123,6 +123,7 @@ scp devserver libdevice.so pi@<RPi-IP>:~/app/     # 같은 디렉토리에 두�
 
 ```
 Makefile  server/server.c  client/client.c  lib/{device.c,device.h}
+docs/{circuit.svg,circuit.png,circuit.fzz,wiring.md,gen_fritzing.py}   # 회로도·결선
 ```
 
 ## 진행 상황 (2026-06-02)
@@ -133,19 +134,26 @@ Makefile  server/server.c  client/client.c  lib/{device.c,device.h}
 - [x] `server/server.c` — TCP 데몬 서버(소켓+pthread+dlopen, CDS/FND/부저 모드 스레드). `-Wall -Wextra -fsyntax-only` 통과
 - [x] `client/client.c` — Ubuntu TCP 클라이언트(수신 스레드 + SIGINT 처리). syntax 통과
 - [x] `Makefile` — `make`(libdevice.so/devserver/devclient), `make run`, `make clean`, 크로스 지원
-- [ ] **Notion 설계서·API 명세서 TCP로 갱신**
+- [x] 7세그먼트 = **SN74LS47 BCD 디코더** 방식으로 전환 (device.c: FND_FONT 삭제, BCD 4핀+BLANK)
+- [x] 회로도 작성 — `docs/circuit.svg`·`docs/circuit.png`(SN74LS47), `docs/wiring.md`(네트리스트), `docs/circuit.fzz`(best-effort Fritzing)
+- [x] Notion 설계서(linux_project)에 **7.5 회로도/결선 섹션** 추가 (SN74LS47 기준)
+- [x] 7세그먼트 실 하드웨어 점등 확인 — L̄T̄ floating ghosting 해결(pin3→5V)
+- [ ] **API 명세서(별도 Notion 페이지) TCP 최신화 점검**
 - [ ] **README.md + 실행과정 text 파일**(제출물)
-- [ ] RPi 실 하드웨어 빌드·동작 검증 (GPIO 핀/CDS 극성 확정)
+- [ ] RPi 실 하드웨어 빌드·전체 동작 검증 (CDS 극성 확정, 부저/CDS/LED)
 
 ## 미확정 (실 하드웨어에서 확정)
 
-- GPIO 핀 번호: `device.c` 상단 `#define`(LED=1/BUZZER=2/CDS=3/FND=21~27) — 실제 결선에 맞춰 수정
-- CDS `digitalRead` 극성(0=어두움/1=밝음)
-- 7세그먼트 공통 캐소드/애노드 (애노드면 폰트 HIGH/LOW 반전)
+- GPIO 핀 번호: `device.c` 상단 — LED=1, BUZZER=2, CDS=0, **7세그=SN74LS47** BCD 입력 A~D=wPi21~24 + BLANK(B̄Ī)=wPi25
+- CDS `digitalRead` 극성(0=어두움/1=밝음) — 실측 필요
 - BUZZER 멜로디 곡 (현재 도레미파솔라시도 placeholder)
+- **확정됨**: 7세그 = 공통 애노드 디스플레이 + SN74LS47(active-LOW). LS47 L̄T̄(3)·R̄B̄Ī(5)·VCC(16)·COM = 5V 직결(L̄T̄ floating 시 전 세그먼트 ghosting)
 
 ## 결정 사항
 
+- (2026-06-02) **7세그먼트 = SN74LS47 BCD 디코더**로 구동. GPIO 7핀(세그 직결) → 4핀(BCD A~D)+1핀(BLANK)로 축소,
+  `device.c`의 FND_FONT 폰트 테이블 삭제. 공통 애노드 디스플레이. L̄T̄·R̄B̄Ī·VCC·COM은 5V 직결(미연결 시 ghosting).
+  회로도: `docs/circuit.{svg,png}`, 네트리스트 `docs/wiring.md`, Fritzing `docs/circuit.fzz`(best-effort) + 생성기 `docs/gen_fritzing.py`.
 - (2026-06-02) **공식 요구로 아키텍처 회귀: 브라우저/HTTP 폐기 → 순수 TCP 서버 + Ubuntu CLI 클라이언트**.
   서버는 **데몬 프로세스**, 클라이언트는 **시그널 처리**. (web/index.html, HTTP server.c 폐기)
 - (2026-06-02) 동시성 = **멀티스레드(pthread)**: 연결당 스레드 + 장치 모드별 스레드(CDS/FND/부저). GPIO는 mutex 보호.
