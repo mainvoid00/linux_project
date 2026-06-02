@@ -74,14 +74,19 @@ static void send_cmd(const char *s)
     usleep(150 * 1000);                 /* 서버 응답이 먼저 출력되도록 잠깐 양보 */
 }
 
-/* 한 줄 입력 → 정수. 실패/인터럽트 시 -1 */
+/* 한 줄 입력 → 정수.
+ *   -1 = EOF/SIGINT(종료),  -2 = 빈 입력(그냥 Enter → 무시/재출력) */
+#define READ_EOF   (-1)
+#define READ_EMPTY (-2)
 static int read_int(const char *prompt)
 {
     char line[64];
     printf("%s", prompt);
     fflush(stdout);
     if (!fgets(line, sizeof(line), stdin))
-        return -1;                      /* EOF 또는 SIGINT(EINTR) */
+        return READ_EOF;                /* EOF 또는 SIGINT(EINTR) */
+    if (line[0] == '\n' || line[0] == '\0')
+        return READ_EMPTY;              /* 빈 입력은 종료가 아님 */
     return atoi(line);
 }
 
@@ -198,7 +203,8 @@ int main(int argc, char **argv)
                " 0) 종료(QUIT)\n"
                "============================\n");
         int sel = read_int("선택> ");
-        if (sel < 0) break;             /* EOF/SIGINT → 종료 */
+        if (sel == READ_EOF) break;     /* EOF/SIGINT → 종료 */
+        if (sel == READ_EMPTY) continue;/* 그냥 Enter → 메뉴 재출력 */
         switch (sel) {
             case 1: menu_led();    break;
             case 2: menu_buzzer(); break;
