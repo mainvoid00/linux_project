@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devserver 실시간 로그</title>
+<style>
+  body { background:#111; color:#0f0; font-family:monospace; margin:0; padding:12px; }
+  h1   { color:#fff; font-size:16px; margin:0 0 8px; }
+  #bar { margin-bottom:8px; }
+  button {
+    background:#222; color:#0f0; border:1px solid #0f0;
+    padding:4px 10px; margin-right:6px; cursor:pointer; font-family:monospace;
+  }
+  button:hover { background:#0f0; color:#111; }
+  #status { color:#888; font-size:12px; margin-left:6px; }
+  pre { white-space:pre-wrap; word-break:break-all; margin:0; }
+</style>
+</head>
+<body>
+  <h1>devserver 실시간 로그</h1>
+  <div id="bar">
+    <button id="pause">⏸ 일시정지</button>
+    <button id="clear">🗑 지우기</button>
+    <button id="reload">↻ 다시 불러오기</button>
+    <span id="status">연결 중…</span>
+  </div>
+  <pre id="log"></pre>
+
+  <script>
+    const logEl = document.getElementById('log');
+    const statusEl = document.getElementById('status');
+    let paused = false;
+
+    function append(text) {
+      logEl.textContent += text + "\n";
+      if (!paused) window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    /* SSE: 서버가 로그 발생 시에만 푸시 (EventSource 는 끊기면 자동 재연결) */
+    function connect() {
+      const es = new EventSource('/events');
+      es.onopen    = () => { statusEl.textContent = '● 실시간 연결됨'; };
+      es.onmessage = (e) => { if (!paused) append(e.data); };
+      es.onerror   = () => { statusEl.textContent = '○ 재연결 중…'; };
+    }
+
+    /* 일시정지: 화면 갱신 멈춤 (재개 후 누락분은 "다시 불러오기"로 복구) */
+    document.getElementById('pause').onclick = function () {
+      paused = !paused;
+      this.textContent = paused ? '▶ 재개' : '⏸ 일시정지';
+    };
+    document.getElementById('clear').onclick = () => { logEl.textContent = ''; };
+    /* 다시 불러오기: SSE 끊김/누락 시 /log 로 전체 버퍼 재요청 (폴백) */
+    document.getElementById('reload').onclick = async () => {
+      try {
+        const r = await fetch('/log');
+        logEl.textContent = await r.text();
+        window.scrollTo(0, document.body.scrollHeight);
+      } catch (x) { /* ignore */ }
+    };
+
+    connect();
+  </script>
+</body>
+</html>

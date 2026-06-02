@@ -44,6 +44,7 @@ int  handle_cmd(int sock, char *line);   /* 0=계속, -1=연결 종료 */
 /* ── weblog.c ────────────────────────────────────────── */
 void  dlog(int level, const char *fmt, ...)
       __attribute__((format(printf, 2, 3)));
-void *log_server_thread(void *arg);      /* arg=(intptr_t)log_port */
+void  weblog_set_index(const char *path); /* index.html 절대경로 설정 */
+void *log_server_thread(void *arg);       /* arg=(intptr_t)log_port */
 
 #endif /* SERVER_H */

@@ -105,6 +105,11 @@ int main(int argc, char **argv)
     if (!realpath(LIB_PATH, abslib))
         strncpy(abslib, LIB_PATH, sizeof(abslib) - 1);
 
+    /* index.html 도 동일하게 데몬화 전에 절대경로로 고정 (없으면 내장 폴백) */
+    char absidx[PATH_MAX] = {0};
+    if (realpath("./index.html", absidx))
+        weblog_set_index(absidx);
+
     daemonize();
     openlog("devserver", LOG_PID, LOG_DAEMON);
 
