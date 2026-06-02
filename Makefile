@@ -30,16 +30,22 @@ WIRINGPI    ?= $(if $(CROSS_COMPILE),/usr/aarch64-linux-gnu,)
 WPI_CFLAGS   = $(if $(WIRINGPI),-I$(WIRINGPI)/include,)
 WPI_LDFLAGS  = $(if $(WIRINGPI),-L$(WIRINGPI)/lib,)
 
+# 동적 라이브러리 소스 (장치별로 분리) — common/led/buzzer/cds/fnd
+LIB_SRC = lib/common.c lib/led.c lib/buzzer.c lib/cds.c lib/fnd.c
+
+# 서버 소스 (기능별로 분리) — main/binding/command/modes/weblog
+SRV_SRC = server/main.c server/binding.c server/command.c server/modes.c server/weblog.c
+
 # 출력 바이너리는 server/ · client/ 디렉토리와 이름이 충돌하므로 dev* 로 둔다.
 all: libdevice.so devserver devclient
 
-# 동적 라이브러리 (런타임 dlopen 대상) — wiringPi 필요
-libdevice.so: lib/device.c lib/device.h
-	$(CC) $(CFLAGS) $(WPI_CFLAGS) -shared -fPIC -o $@ lib/device.c $(WPI_LDFLAGS) -lwiringPi
+# 동적 라이브러리 (런타임 dlopen 대상) — wiringPi 필요 (I2C 포함 -lwiringPi)
+libdevice.so: $(LIB_SRC) lib/device.h
+	$(CC) $(CFLAGS) $(WPI_CFLAGS) -shared -fPIC -o $@ $(LIB_SRC) $(WPI_LDFLAGS) -lwiringPi
 
 # TCP 데몬 서버 (libdevice.so 는 링크하지 않고 dlopen 으로 로드) — RPi 의존성 없음
-devserver: server/server.c
-	$(CC) $(CFLAGS) -o $@ server/server.c -lpthread -ldl
+devserver: $(SRV_SRC) server/server.h
+	$(CC) $(CFLAGS) -o $@ $(SRV_SRC) -lpthread -ldl
 
 # Ubuntu TCP 클라이언트 — 호스트(x86-64) native 빌드
 devclient: client/client.c
