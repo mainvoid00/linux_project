@@ -109,11 +109,12 @@ Raspberry Pi에 연결된 장치(LED·부저·조도센서·7세그먼트)를 �
 ```bash
 # 네이티브 (RPi 위에서 직접): libdevice.so + devserver + devclient
 make ; make run                                   # → ./devserver 5000 (데몬, 로그뷰어 8080)
-# 로그 뷰어: 브라우저로 http://<RPi-IP>:8080 접속 (실시간 서버 로그). 포트 변경: ./devserver 5000 9090
+# 로그 뷰어: 브라우저로 http://<RPi-IP>:8080 접속 (SSE 실시간 푸시). 포트 변경: ./devserver 5000 9090
+# → 실행 디렉토리에 index.html 필요 (없으면 내장 폴백 페이지 사용)
 
 # 크로스 (Ubuntu 빌드머신 → aarch64 RPi 타겟): 서버/라이브러리만 크로스, 클라이언트는 호스트 native
 make CROSS_COMPILE=aarch64-linux-gnu- WIRINGPI=<wiringpi-경로>
-scp devserver libdevice.so pi@<RPi-IP>:~/app/     # 같은 디렉토리에 두고 그 위치에서 실행
+scp devserver libdevice.so index.html pi@<RPi-IP>:~/app/   # 같은 디렉토리에 두고 그 위치에서 실행
 ```
 
 > - 출력 바이너리명 `devserver`·`devclient` (이름이 `server/`·`client/` 디렉토리와 충돌하지 않게).
@@ -125,12 +126,13 @@ scp devserver libdevice.so pi@<RPi-IP>:~/app/     # 같은 디렉토리에 두�
 ## 디렉토리 구조 (단일 루트 Makefile)
 
 ```
-Makefile  client/client.c
+Makefile  client/client.c  index.html
 server/{server.h, main.c, binding.c, command.c, modes.c, weblog.c}   # 기능별 분리 → devserver
 lib/{device.h, common.c, led.c, buzzer.c, cds.c, fnd.c}              # 장치별 분리 → libdevice.so (dlopen)
 docs/{circuit.svg,circuit.png,circuit.fzz,wiring.md,gen_fritzing.py} # 회로도·결선
 ```
-> 서버 모듈: `main`(accept·데몬) / `binding`(dlopen) / `command`(프로토콜) / `modes`(cds·fnd·buzzer 스레드) / `weblog`(HTML 로그)
+> 서버 모듈: `main`(accept·데몬) / `binding`(dlopen) / `command`(프로토콜) / `modes`(cds·fnd·buzzer 스레드) / `weblog`(SSE 로그뷰어)
+> 로그 뷰어 UI = `index.html`(EventSource SSE). devserver 가 데몬화 전 `realpath`로 경로 고정 → 실행 디렉토리에 필요.
 
 ## 진행 상황 (2026-06-02)
 
@@ -148,7 +150,7 @@ docs/{circuit.svg,circuit.png,circuit.fzz,wiring.md,gen_fritzing.py} # 회로도
 - [x] **CDS → PCF8591 ADC(YL-40) I2C 전환** — `wiringPiI2C` AIN0, `cds_set/get_threshold`. 임계값 클라이언트 제어
 - [x] **server CDS 갱신** — `CDS THRESHOLD` 명령, analog EVT, 모드상태 뮤텍스(`g_state`) 추가. 빌드 통과
 - [x] **client 재작성** — SIGINT만 종료(그 외 전부 무시) + 번호식 계층 메뉴. 호스트 빌드 통과
-- [x] **추가기능: HTML 실시간 서버 로그 뷰어** — 2번째 포트(기본 8080), 로그 링버퍼 + `/log` 폴링. 빌드 통과
+- [x] **추가기능: 실시간 서버 로그 뷰어** — 2번째 포트(기본 8080), **SSE 푸시**(`/events`) + 외부 `index.html`(일시정지/지우기/다시불러오기). `/log` 폴백 유지. 네이티브 하니스로 검증
 - [x] **서버 기능별 분리** — `server/{main,binding,command,modes,weblog}.c` + `server.h`. 빌드 통과(클라이언트는 220줄로 단일 유지)
 - [x] **Notion 설계서·API 명세서 TCP/PCF8591 최신화** 완료
 - [ ] **README.md + 실행과정 text 파일 + 개발문서(개요·일정·구현·보완)**(제출물)
