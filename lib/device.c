@@ -9,23 +9,10 @@
 #define BUZZER_PIN  2
 #define CDS_PIN     0
 
-/* 7세그먼트 세그먼트 핀 a,b,c,d,e,f,g
- * 공통 애노드(common-anode): 세그먼트 LOW = 점등, HIGH = 소등 */
-static const int FND_SEG[7] = { 21, 22, 23, 24, 25, 26, 27 };
-
-/* 숫자 0~9 의 세그먼트 패턴 (a b c d e f g) */
-static const int FND_FONT[10][7] = {
-    {1, 1, 1, 1, 1, 1, 0},  /* 0 */
-    {0, 1, 1, 0, 0, 0, 0},  /* 1 */
-    {1, 1, 0, 1, 1, 0, 1},  /* 2 */
-    {1, 1, 1, 1, 0, 0, 1},  /* 3 */
-    {0, 1, 1, 0, 0, 1, 1},  /* 4 */
-    {1, 0, 1, 1, 0, 1, 1},  /* 5 */
-    {1, 0, 1, 1, 1, 1, 1},  /* 6 */
-    {1, 1, 1, 0, 0, 0, 0},  /* 7 */
-    {1, 1, 1, 1, 1, 1, 1},  /* 8 */
-    {1, 1, 1, 1, 0, 1, 1},  /* 9 */
-};
+/* 7세그먼트 = SN74LS47 BCD 디코더 구동 (공통 애노드 디스플레이)
+ * BCD 입력 A,B,C,D (A=LSB) 4핀만 제어 → 디코더가 a~g 세그먼트 생성 */
+static const int FND_BCD[4] = { 21, 22, 23, 24 };  /* A, B, C, D */
+#define FND_BLANK  25   /* SN74LS47 BI(pin4): HIGH=표시, LOW=소등 */
 
 /* 밝기 레벨별 PWM 듀티(0~100): off / 최저 / 중간 / 최대 */
 static const int LED_LEVEL[4] = { 0, 20, 55, 100 };
@@ -43,10 +30,10 @@ int device_init(void)
 
     pinMode(CDS_PIN, INPUT);
 
-    for (i = 0; i < 7; i++) {
-        pinMode(FND_SEG[i], OUTPUT);
-        digitalWrite(FND_SEG[i], HIGH);  /* 애노드: 초기 소등 */
-    }
+    for (i = 0; i < 4; i++)
+        pinMode(FND_BCD[i], OUTPUT);
+    pinMode(FND_BLANK, OUTPUT);
+    digitalWrite(FND_BLANK, LOW);  /* 초기 소등 */
 
     /* 압전(passive) 부저: softTone 채널 생성 */
     if (softToneCreate(BUZZER_PIN) != 0)
@@ -109,18 +96,16 @@ int fnd_display(int num)
     if (num < 0 || num > 9)
         return -1;
 
-    for (i = 0; i < 7; i++)
-        digitalWrite(FND_SEG[i], FND_FONT[num][i] ? LOW : HIGH);  /* 애노드: LOW=점등 */
+    /* num 을 4비트 BCD 로 출력 (A=LSB) → SN74LS47 이 세그먼트 디코딩 */
+    for (i = 0; i < 4; i++)
+        digitalWrite(FND_BCD[i], (num >> i) & 1);
+    digitalWrite(FND_BLANK, HIGH);  /* 표시 활성 */
 
     return 0;
 }
 
 int fnd_clear(void)
 {
-    int i;
-
-    for (i = 0; i < 7; i++)
-        digitalWrite(FND_SEG[i], HIGH);  /* 애노드: HIGH=소등 */
-
+    digitalWrite(FND_BLANK, LOW);  /* BI=LOW → 전 세그먼트 소등 */
     return 0;
 }
