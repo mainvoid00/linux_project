@@ -7,10 +7,10 @@
  * 실제 결선에 맞춰 반드시 수정할 것. (미확정 — 결선 확인 필요) */
 #define LED_PIN     1   /* softPwm 으로 밝기 제어 */
 #define BUZZER_PIN  2
-#define CDS_PIN     3
+#define CDS_PIN     0
 
 /* 7세그먼트 세그먼트 핀 a,b,c,d,e,f,g
- * 공통 캐소드(common-cathode) 가정: 세그먼트 HIGH = 점등 */
+ * 공통 애노드(common-anode): 세그먼트 LOW = 점등, HIGH = 소등 */
 static const int FND_SEG[7] = { 21, 22, 23, 24, 25, 26, 27 };
 
 /* 숫자 0~9 의 세그먼트 패턴 (a b c d e f g) */
@@ -45,7 +45,7 @@ int device_init(void)
 
     for (i = 0; i < 7; i++) {
         pinMode(FND_SEG[i], OUTPUT);
-        digitalWrite(FND_SEG[i], LOW);
+        digitalWrite(FND_SEG[i], HIGH);  /* 애노드: 초기 소등 */
     }
 
     /* 압전(passive) 부저: softTone 채널 생성 */
@@ -110,7 +110,7 @@ int fnd_display(int num)
         return -1;
 
     for (i = 0; i < 7; i++)
-        digitalWrite(FND_SEG[i], FND_FONT[num][i] ? HIGH : LOW);
+        digitalWrite(FND_SEG[i], FND_FONT[num][i] ? LOW : HIGH);  /* 애노드: LOW=점등 */
 
     return 0;
 }
@@ -120,7 +120,7 @@ int fnd_clear(void)
     int i;
 
     for (i = 0; i < 7; i++)
-        digitalWrite(FND_SEG[i], LOW);
+        digitalWrite(FND_SEG[i], HIGH);  /* 애노드: HIGH=소등 */
 
     return 0;
 }
