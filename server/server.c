@@ -16,6 +16,7 @@
 #include <dlfcn.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <syslog.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -282,7 +283,7 @@ int main(int argc, char **argv)
     int port = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
 
     /* libdevice.so 는 cwd 상대경로 → 데몬화 전에 절대경로로 고정 */
-    char abslib[1024] = {0};
+    char abslib[PATH_MAX] = {0};
     if (!realpath(LIB_PATH, abslib))
         strncpy(abslib, LIB_PATH, sizeof(abslib) - 1);
 

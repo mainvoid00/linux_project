@@ -17,14 +17,16 @@
 # devserver, libdevice.so 는 RPi 같은 디렉토리에 두고 그 위치에서 실행
 # (devserver 는 ./libdevice.so 를 dlopen — 실행 디렉토리에 .so 가 있어야 함).
 
-CROSS_COMPILE ?=
+CROSS_COMPILE ?= aarch64-linux-gnu-
 CC      = $(CROSS_COMPILE)gcc   # 서버/라이브러리 (RPi 타겟)
 HOSTCC  = gcc                   # 클라이언트 (Ubuntu 호스트)
 CFLAGS  = -Wall -Wextra -O2
-PORT   ?= 5000
+PORT	= 5000
 
-# wiringPi 헤더/라이브러리 위치 (네이티브 RPi 빌드면 비워두면 됨)
-WIRINGPI    ?=
+# wiringPi 헤더/라이브러리 위치
+# 크로스 빌드: /usr/aarch64-linux-gnu (Ubuntu에 설치된 aarch64용 wiringPi)
+# 네이티브 RPi 빌드: make CROSS_COMPILE= WIRINGPI= (시스템 경로 사용)
+WIRINGPI    ?= $(if $(CROSS_COMPILE),/usr/aarch64-linux-gnu,)
 WPI_CFLAGS   = $(if $(WIRINGPI),-I$(WIRINGPI)/include,)
 WPI_LDFLAGS  = $(if $(WIRINGPI),-L$(WIRINGPI)/lib,)
 
