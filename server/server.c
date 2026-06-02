@@ -159,6 +159,7 @@ static int handle_cmd(int sock, char *line)
 
     if (!strcmp(cmd, "LED")) {
         if (!a1) { send_line(sock, "ERR INVALID_ARG"); return 0; }
+        g_cds_run = 0;   /* 수동 LED 제어 → 조도 자동 모드 해제 (LED 모드 배타성) */
         pthread_mutex_lock(&g_dev);
         if      (!strcmp(a1, "ON"))   { led_on();      send_line(sock, "OK LED ON"); }
         else if (!strcmp(a1, "OFF"))  { led_off();     send_line(sock, "OK LED OFF"); }
