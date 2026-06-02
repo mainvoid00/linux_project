@@ -1,0 +1,9 @@
+# 빌드 산출물
+/devserver
+/devclient
+*.so
+*.o
+
+# 에디터 임시파일
+*.swp
+*~
