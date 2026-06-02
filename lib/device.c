@@ -1,12 +1,13 @@
 #include <wiringPi.h>
+#include <softPwm.h>
 #include <softTone.h>
 #include "device.h"
 
 /* ── GPIO 핀 번호 (wiringPi 기준) ──────────────────────────────
  * 실제 결선에 맞춰 반드시 수정할 것. (미확정 — 결선 확인 필요) */
-#define LED_PIN     0
-#define BUZZER_PIN  1
-#define CDS_PIN     2
+#define LED_PIN     1   /* softPwm 으로 밝기 제어 */
+#define BUZZER_PIN  2
+#define CDS_PIN     3
 
 /* 7세그먼트 세그먼트 핀 a,b,c,d,e,f,g
  * 공통 캐소드(common-cathode) 가정: 세그먼트 HIGH = 점등 */
@@ -26,6 +27,9 @@ static const int FND_FONT[10][7] = {
     {1, 1, 1, 1, 0, 1, 1},  /* 9 */
 };
 
+/* 밝기 레벨별 PWM 듀티(0~100): off / 최저 / 중간 / 최대 */
+static const int LED_LEVEL[4] = { 0, 20, 55, 100 };
+
 int device_init(void)
 {
     int i;
@@ -33,8 +37,9 @@ int device_init(void)
     if (wiringPiSetup() == -1)
         return -1;
 
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
+    /* LED: softPwm 채널 생성 (범위 0~100) */
+    if (softPwmCreate(LED_PIN, 0, 100) != 0)
+        return -1;
 
     pinMode(CDS_PIN, INPUT);
 
@@ -59,13 +64,21 @@ void device_cleanup(void)
 
 int led_on(void)
 {
-    digitalWrite(LED_PIN, HIGH);
+    softPwmWrite(LED_PIN, 100);
     return 0;
 }
 
 int led_off(void)
 {
-    digitalWrite(LED_PIN, LOW);
+    softPwmWrite(LED_PIN, 0);
+    return 0;
+}
+
+int led_bright(int level)
+{
+    if (level < 0 || level > 3)
+        return -1;
+    softPwmWrite(LED_PIN, LED_LEVEL[level]);
     return 0;
 }
 
@@ -85,7 +98,7 @@ int buzzer_off(void)
 
 int cds_read(void)
 {
-    /* 0=어두움, 1=밝음 (결선 극성에 따라 반전될 수 있음 — 확인 필요) */
+    /* 0=어두움(빛 없음), 1=밝음 (결선 극성에 따라 반전될 수 있음 — 확인 필요) */
     return digitalRead(CDS_PIN);
 }
 

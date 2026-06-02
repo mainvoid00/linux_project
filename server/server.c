@@ -1,494 +1,332 @@
-/*
- * server.c — TCP 기반 원격 장치 제어 시스템 (HTTP 서버)
+/* TCP 원격 장치 제어 서버 (데몬)
+ *   - raw TCP 소켓 + 연결당 pthread
+ *   - libdevice.so 를 dlopen/dlsym 으로 런타임 동적 로딩
+ *   - 텍스트 라인 프로토콜 (요청 1줄 / 응답·이벤트 1줄)
  *
- * raw 소켓으로 직접 구현한 경량 HTTP/1.1 서버. 연결마다 pthread.
- * 장치 제어 로직은 libdevice.so 를 dlopen 으로 런타임 로딩한다.
- * CDS/LOG 실시간 값은 SSE(text/event-stream)로 push.
- *
- * 빌드: gcc -o server server.c -lpthread -ldl
- * 실행: ./server 8080   (브라우저: http://<RPi-IP>:8080/)
+ * 빌드: gcc -Wall -Wextra -o devserver server/server.c -lpthread -ldl
+ * 실행: ./devserver [port]   (기본 5000) — 데몬으로 백그라운드 동작
  */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
 #include <unistd.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <dlfcn.h>
 #include <signal.h>
-#include <time.h>
-#include <arpa/inet.h>
+#include <fcntl.h>
+#include <syslog.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
-/* ----------------------------- libdevice.so ----------------------------- */
+#define DEFAULT_PORT 5000
+#define LIB_PATH     "./libdevice.so"
+
+/* ── libdevice.so 함수 포인터 ─────────────────────────── */
 static void *g_lib;
 static int  (*dev_init)(void);
 static void (*dev_cleanup)(void);
 static int  (*led_on)(void);
 static int  (*led_off)(void);
+static int  (*led_bright)(int);
 static int  (*buzzer_tone)(int);
 static int  (*buzzer_off)(void);
 static int  (*cds_read)(void);
 static int  (*fnd_display)(int);
 static int  (*fnd_clear)(void);
 
-static void load_device_lib(void)
-{
-	g_lib = dlopen("./libdevice.so", RTLD_NOW);
-	if (!g_lib) {
-		fprintf(stderr, "dlopen: %s\n", dlerror());
-		exit(1);
-	}
-#define SYM(fp, name)                                                   \
-	do {                                                                \
-		*(void **)(&fp) = dlsym(g_lib, name);                           \
-		if (!fp) { fprintf(stderr, "dlsym %s: %s\n", name, dlerror());   \
-		           exit(1); }                                           \
-	} while (0)
-	SYM(dev_init,    "device_init");
-	SYM(dev_cleanup, "device_cleanup");
-	SYM(led_on,      "led_on");
-	SYM(led_off,     "led_off");
-	SYM(buzzer_tone, "buzzer_tone");
-	SYM(buzzer_off,  "buzzer_off");
-	SYM(cds_read,    "cds_read");
-	SYM(fnd_display, "fnd_display");
-	SYM(fnd_clear,   "fnd_clear");
-#undef SYM
-}
+/* GPIO/장치는 공유 자원 → mutex 로 보호 */
+static pthread_mutex_t g_dev = PTHREAD_MUTEX_INITIALIZER;
 
-/* ------------------------------- 공유 상태 ------------------------------- */
-/* g_lock: GPIO(하드웨어) 접근 + 공유 상태를 함께 보호. sleep 중에는 잡지 않는다. */
-static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+/* ── 모드 상태 (한 시점에 cds/fnd/buzzer 각 1개) ──────── */
+static volatile int g_cds_run, g_fnd_run, g_buz_run;
+static int g_cds_sock = -1, g_fnd_sock = -1;
 
-typedef enum { LED_OFF, LED_ON, LED_BLINK, LED_CDS } led_mode_t;
-static led_mode_t g_led_mode = LED_OFF;
-
-static volatile int g_blink_run, g_cds_run, g_fnd_run, g_buzz_run;
-static pthread_t    g_blink_tid, g_cds_tid, g_fnd_tid, g_buzz_tid;
-
-static int          g_cds_value;            /* digitalRead 결과 0/1 */
-static const char  *g_cds_state = "DARK";   /* "DARK" | "BRIGHT" */
-static int          g_fnd_count;
-static int          g_buzz_on;
-static int          g_log_on;
-
-/* 로그 링버퍼 (SSE /log/stream 가 커서로 읽는다) */
-#define LOG_CAP 128
-static char           g_logbuf[LOG_CAP][192];
-static unsigned long  g_log_head;           /* 누적 카운트 */
-
-static void msleep(int ms)
-{
-	struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
-	nanosleep(&ts, NULL);
-}
-
-static void log_add(const char *fmt, ...)
-{
-	if (!g_log_on)
-		return;
-
-	char msg[128];
-	va_list ap;
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof msg, fmt, ap);
-	va_end(ap);
-
-	time_t t = time(NULL);
-	struct tm tm;
-	char ts[16];
-	localtime_r(&t, &tm);
-	strftime(ts, sizeof ts, "%H:%M:%S", &tm);
-
-	pthread_mutex_lock(&g_lock);
-	snprintf(g_logbuf[g_log_head % LOG_CAP], sizeof g_logbuf[0],
-	         "{\"time\":\"%s\",\"level\":\"INFO\",\"msg\":\"%s\"}", ts, msg);
-	g_log_head++;
-	pthread_mutex_unlock(&g_lock);
-}
-
-/* ------------------------------ 모드 스레드 ------------------------------ */
-static void *blink_fn(void *arg)
-{
-	(void)arg;
-	int on = 0;
-	while (g_blink_run) {
-		pthread_mutex_lock(&g_lock);
-		if (on) led_off(); else led_on();
-		pthread_mutex_unlock(&g_lock);
-		on = !on;
-		sleep(1);
-	}
-	pthread_mutex_lock(&g_lock);
-	led_off();
-	pthread_mutex_unlock(&g_lock);
-	return NULL;
-}
-
-static void *cds_fn(void *arg)
-{
-	(void)arg;
-	while (g_cds_run) {
-		pthread_mutex_lock(&g_lock);
-		int v = cds_read();
-		if (v) led_on(); else led_off();         /* 밝으면 ON, 어두우면 OFF */
-		g_cds_value = v;
-		g_cds_state = v ? "BRIGHT" : "DARK";
-		pthread_mutex_unlock(&g_lock);
-		sleep(1);
-	}
-	return NULL;
-}
-
-static void *fnd_fn(void *arg)
-{
-	(void)arg;
-	while (g_fnd_run) {
-		pthread_mutex_lock(&g_lock);
-		fnd_display(g_fnd_count);
-		g_fnd_count = (g_fnd_count + 1) % 10;     /* 0→9 무한 순환 */
-		pthread_mutex_unlock(&g_lock);
-		sleep(1);
-	}
-	return NULL;
-}
-
-/* 저장된 계이름 멜로디 — "학교종" 첫 소절 (곡은 변경 가능). {주파수Hz, 길이ms}, 0=쉼표 */
-static const int g_melody[][2] = {
-	{392,400},{392,400},{440,400},{440,400},{392,400},{392,400},{330,800},
-	{392,400},{392,400},{330,400},{330,400},{294,800},
-	{0,0}
+/* 저장된 멜로디(계이름 주파수 Hz, 지속 ms): 도레미파솔라시도 */
+static const int MELODY[][2] = {
+    {262,300},{294,300},{330,300},{349,300},
+    {392,300},{440,300},{494,300},{523,500},
 };
+#define MELODY_LEN ((int)(sizeof(MELODY)/sizeof(MELODY[0])))
 
-static void *buzz_fn(void *arg)
+/* ── 유틸 ─────────────────────────────────────────────── */
+static void send_line(int sock, const char *s)
 {
-	(void)arg;
-	while (g_buzz_run) {
-		for (int i = 0; g_melody[i][1] && g_buzz_run; i++) {
-			pthread_mutex_lock(&g_lock);
-			if (g_melody[i][0]) buzzer_tone(g_melody[i][0]);
-			else                buzzer_off();
-			pthread_mutex_unlock(&g_lock);
-			msleep(g_melody[i][1]);
-			pthread_mutex_lock(&g_lock);
-			buzzer_off();
-			pthread_mutex_unlock(&g_lock);
-			msleep(40);
-		}
-	}
-	pthread_mutex_lock(&g_lock);
-	buzzer_off();
-	pthread_mutex_unlock(&g_lock);
-	return NULL;
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf), "%s\n", s);
+    if (n > 0)
+        send(sock, buf, (size_t)n, MSG_NOSIGNAL);
 }
 
-/* ------------------------- 모드 start/stop 헬퍼 -------------------------- */
-/* join 을 포함하므로 g_lock 을 잡지 않은 상태에서 호출해야 한다. */
-static void stop_blink(void) { if (g_blink_run) { g_blink_run = 0; pthread_join(g_blink_tid, NULL); } }
-static void stop_cds(void)   { if (g_cds_run)   { g_cds_run   = 0; pthread_join(g_cds_tid,   NULL); } }
-
-static void stop_fnd(void)
+static void bind_symbols(void)
 {
-	if (!g_fnd_run) return;
-	g_fnd_run = 0;
-	pthread_join(g_fnd_tid, NULL);
-	pthread_mutex_lock(&g_lock);
-	fnd_clear();
-	g_fnd_count = 0;
-	pthread_mutex_unlock(&g_lock);
+    dev_init    = dlsym(g_lib, "device_init");
+    dev_cleanup = dlsym(g_lib, "device_cleanup");
+    led_on      = dlsym(g_lib, "led_on");
+    led_off     = dlsym(g_lib, "led_off");
+    led_bright  = dlsym(g_lib, "led_bright");
+    buzzer_tone = dlsym(g_lib, "buzzer_tone");
+    buzzer_off  = dlsym(g_lib, "buzzer_off");
+    cds_read    = dlsym(g_lib, "cds_read");
+    fnd_display = dlsym(g_lib, "fnd_display");
+    fnd_clear   = dlsym(g_lib, "fnd_clear");
 }
 
-static void stop_buzz(void)
+/* ── 모드 스레드 ──────────────────────────────────────── */
+
+/* 조도 자동 연동: 매초 조도 읽어 LED 자동제어(빛 없으면 ON) + 클라이언트로 값 전송 */
+static void *cds_thread(void *arg)
 {
-	if (!g_buzz_run) return;
-	g_buzz_run = 0;
-	pthread_join(g_buzz_tid, NULL);
-	g_buzz_on = 0;
+    int sock = (int)(intptr_t)arg;
+    while (g_cds_run) {
+        int v;
+        pthread_mutex_lock(&g_dev);
+        v = cds_read();
+        if (v == 0) led_on();   /* 빛 없음(어두움) → LED ON */
+        else        led_off();  /* 빛 있음(밝음)   → LED OFF */
+        pthread_mutex_unlock(&g_dev);
+
+        char msg[64];
+        snprintf(msg, sizeof(msg), "EVT CDS %d %s", v, v ? "LIGHT" : "DARK");
+        send_line(sock, msg);
+        sleep(1);
+    }
+    return NULL;
 }
 
-/* LED 를 소유한 자동 모드(blink/cds)를 모두 중단 — LED 모드 배타성 보장 */
-static void led_release(void) { stop_blink(); stop_cds(); }
-
-/* ------------------------------ HTTP 응답 ------------------------------- */
-static void http_send(int fd, const char *status, const char *ctype, const char *body)
+/* 7세그 카운트다운: n→0 매초 -1 표시, 0 도달 시 부저 1초 */
+static void *fnd_thread(void *arg)
 {
-	char hdr[256];
-	int  blen = body ? (int)strlen(body) : 0;
-	int  hlen = snprintf(hdr, sizeof hdr,
-		"HTTP/1.1 %s\r\n"
-		"Content-Type: %s\r\n"
-		"Content-Length: %d\r\n"
-		"Access-Control-Allow-Origin: *\r\n"
-		"Connection: close\r\n\r\n",
-		status, ctype, blen);
-	write(fd, hdr, hlen);
-	if (blen) write(fd, body, blen);
+    int start = (int)(intptr_t)arg;
+    int i;
+    for (i = start; i >= 0 && g_fnd_run; i--) {
+        char msg[32];
+        pthread_mutex_lock(&g_dev);
+        fnd_display(i);
+        pthread_mutex_unlock(&g_dev);
+        snprintf(msg, sizeof(msg), "EVT FND %d", i);
+        send_line(g_fnd_sock, msg);
+        if (i == 0) break;
+        sleep(1);
+    }
+    if (g_fnd_run) {            /* 정상적으로 0 도달 → 부저 울림 */
+        pthread_mutex_lock(&g_dev);
+        buzzer_tone(1000);
+        pthread_mutex_unlock(&g_dev);
+        sleep(1);
+        pthread_mutex_lock(&g_dev);
+        buzzer_off();
+        fnd_clear();
+        pthread_mutex_unlock(&g_dev);
+        send_line(g_fnd_sock, "EVT FND DONE");
+    }
+    g_fnd_run = 0;
+    return NULL;
 }
 
-static void send_json(int fd, const char *status, const char *json)
+/* 부저 멜로디 반복 재생 */
+static void *buzzer_thread(void *arg)
 {
-	http_send(fd, status, "application/json", json);
+    (void)arg;
+    while (g_buz_run) {
+        int i;
+        for (i = 0; i < MELODY_LEN && g_buz_run; i++) {
+            pthread_mutex_lock(&g_dev);
+            buzzer_tone(MELODY[i][0]);
+            pthread_mutex_unlock(&g_dev);
+            usleep((useconds_t)MELODY[i][1] * 1000);
+        }
+    }
+    pthread_mutex_lock(&g_dev);
+    buzzer_off();
+    pthread_mutex_unlock(&g_dev);
+    return NULL;
 }
 
-static void send_ok(int fd, const char *json) { send_json(fd, "200 OK", json); }
-
-/* GET / : web/index.html 정적 서빙 (없으면 최소 안내 페이지) */
-static void serve_index(int fd)
+/* ── 명령 처리: 0=계속, -1=연결 종료 ──────────────────── */
+static int handle_cmd(int sock, char *line)
 {
-	FILE *f = fopen("web/index.html", "rb");
-	if (!f) {
-		const char *fallback =
-			"<!doctype html><meta charset=utf-8><h1>device control</h1>"
-			"<p>web/index.html 없음. API: POST /led/on 등, GET /status</p>";
-		http_send(fd, "200 OK", "text/html; charset=utf-8", fallback);
-		return;
-	}
-	fseek(f, 0, SEEK_END);
-	long sz = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	char *buf = malloc(sz + 1);
-	if (!buf) { fclose(f); send_json(fd, "500 Internal Server Error", "{\"ok\":false,\"error\":\"INTERNAL\"}"); return; }
-	size_t rd = fread(buf, 1, sz, f);
-	fclose(f);
+    char *cmd = strtok(line, " \t");
+    char *a1  = strtok(NULL, " \t");
+    pthread_t tid;
 
-	char hdr[160];
-	int hlen = snprintf(hdr, sizeof hdr,
-		"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-		"Content-Length: %zu\r\nConnection: close\r\n\r\n", rd);
-	write(fd, hdr, hlen);
-	write(fd, buf, rd);
-	free(buf);
+    if (!cmd)
+        return 0;
+
+    if (!strcmp(cmd, "LED")) {
+        if (!a1) { send_line(sock, "ERR INVALID_ARG"); return 0; }
+        pthread_mutex_lock(&g_dev);
+        if      (!strcmp(a1, "ON"))   { led_on();      send_line(sock, "OK LED ON"); }
+        else if (!strcmp(a1, "OFF"))  { led_off();     send_line(sock, "OK LED OFF"); }
+        else if (!strcmp(a1, "HIGH")) { led_bright(3); send_line(sock, "OK LED HIGH"); }
+        else if (!strcmp(a1, "MID"))  { led_bright(2); send_line(sock, "OK LED MID"); }
+        else if (!strcmp(a1, "LOW"))  { led_bright(1); send_line(sock, "OK LED LOW"); }
+        else                          { send_line(sock, "ERR INVALID_ARG"); }
+        pthread_mutex_unlock(&g_dev);
+    }
+    else if (!strcmp(cmd, "BUZZER")) {
+        if (a1 && !strcmp(a1, "ON")) {
+            if (!g_buz_run) { g_buz_run = 1; pthread_create(&tid, NULL, buzzer_thread, NULL); pthread_detach(tid); }
+            send_line(sock, "OK BUZZER ON");
+        } else if (a1 && !strcmp(a1, "OFF")) {
+            g_buz_run = 0;
+            send_line(sock, "OK BUZZER OFF");
+        } else send_line(sock, "ERR INVALID_ARG");
+    }
+    else if (!strcmp(cmd, "CDS")) {
+        if (a1 && !strcmp(a1, "ON")) {
+            g_cds_run = 0; usleep(1100*1000);          /* 기존 모드 정리 */
+            g_cds_sock = sock; g_cds_run = 1;
+            pthread_create(&tid, NULL, cds_thread, (void *)(intptr_t)sock);
+            pthread_detach(tid);
+            send_line(sock, "OK CDS ON");
+        } else if (a1 && !strcmp(a1, "OFF")) {
+            g_cds_run = 0;
+            send_line(sock, "OK CDS OFF");
+        } else if (a1 && !strcmp(a1, "READ")) {
+            int v; char msg[64];
+            pthread_mutex_lock(&g_dev); v = cds_read(); pthread_mutex_unlock(&g_dev);
+            snprintf(msg, sizeof(msg), "OK CDS %d %s", v, v ? "LIGHT" : "DARK");
+            send_line(sock, msg);
+        } else send_line(sock, "ERR INVALID_ARG");
+    }
+    else if (!strcmp(cmd, "FND")) {
+        if (a1 && !strcmp(a1, "STOP")) {
+            g_fnd_run = 0;
+            pthread_mutex_lock(&g_dev); fnd_clear(); pthread_mutex_unlock(&g_dev);
+            send_line(sock, "OK FND STOP");
+        } else if (a1 && a1[0] >= '0' && a1[0] <= '9' && a1[1] == '\0') {
+            g_fnd_run = 0; usleep(100*1000);
+            g_fnd_sock = sock; g_fnd_run = 1;
+            pthread_create(&tid, NULL, fnd_thread, (void *)(intptr_t)(a1[0]-'0'));
+            pthread_detach(tid);
+            send_line(sock, "OK FND START");
+        } else send_line(sock, "ERR INVALID_ARG");
+    }
+    else if (!strcmp(cmd, "STATUS")) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "OK STATUS cds=%d fnd=%d buzzer=%d",
+                 g_cds_run, g_fnd_run, g_buz_run);
+        send_line(sock, msg);
+    }
+    else if (!strcmp(cmd, "QUIT")) {
+        send_line(sock, "OK BYE");
+        return -1;
+    }
+    else {
+        send_line(sock, "ERR UNKNOWN_COMMAND");
+    }
+    return 0;
 }
 
-/* GET /status */
-static void send_status(int fd)
+/* ── 연결 핸들러 ──────────────────────────────────────── */
+static void *client_thread(void *arg)
 {
-	char body[256];
-	pthread_mutex_lock(&g_lock);
-	const char *led = g_led_mode == LED_ON   ? "on"
-	                : g_led_mode == LED_BLINK ? "blink"
-	                : g_led_mode == LED_CDS   ? "cds" : "off";
-	snprintf(body, sizeof body,
-		"{\"led\":\"%s\","
-		"\"cds\":{\"active\":%s,\"value\":%d,\"state\":\"%s\"},"
-		"\"buzzer\":\"%s\","
-		"\"fnd\":{\"active\":%s,\"count\":%d},"
-		"\"log\":\"%s\"}",
-		led,
-		g_cds_run ? "true" : "false", g_cds_value, g_cds_state,
-		g_buzz_on ? "on" : "off",
-		g_fnd_run ? "true" : "false", g_fnd_count,
-		g_log_on ? "on" : "off");
-	pthread_mutex_unlock(&g_lock);
-	send_ok(fd, body);
+    int sock = (int)(intptr_t)arg;
+    char buf[1024];
+    int len = 0;
+
+    send_line(sock, "OK WELCOME");
+    for (;;) {
+        int n = recv(sock, buf + len, sizeof(buf) - 1 - (size_t)len, 0);
+        if (n <= 0) break;
+        len += n; buf[len] = '\0';
+
+        char *nl;
+        while ((nl = memchr(buf, '\n', (size_t)len))) {
+            *nl = '\0';
+            char *cr = strchr(buf, '\r');
+            if (cr) *cr = '\0';
+            int r = handle_cmd(sock, buf);
+            int consumed = (int)(nl - buf) + 1;
+            len -= consumed;
+            memmove(buf, nl + 1, (size_t)len);
+            buf[len] = '\0';
+            if (r < 0) { close(sock); return NULL; }
+        }
+        if (len >= (int)sizeof(buf) - 1) len = 0;  /* 과도한 라인 폐기 */
+    }
+
+    /* 연결 종료 시 이 소켓이 소유한 모드 정리 */
+    if (g_cds_sock == sock) g_cds_run = 0;
+    if (g_fnd_sock == sock) g_fnd_run = 0;
+    close(sock);
+    return NULL;
 }
 
-/* --------------------------------- SSE --------------------------------- */
-static void sse_begin(int fd)
+/* ── 데몬화 ───────────────────────────────────────────── */
+static void daemonize(void)
 {
-	const char *h =
-		"HTTP/1.1 200 OK\r\n"
-		"Content-Type: text/event-stream\r\n"
-		"Cache-Control: no-cache\r\n"
-		"Access-Control-Allow-Origin: *\r\n"
-		"Connection: keep-alive\r\n\r\n";
-	write(fd, h, strlen(h));
+    pid_t pid = fork();
+    if (pid < 0) exit(1);
+    if (pid > 0) exit(0);          /* 부모 종료 */
+    setsid();                      /* 새 세션 리더 */
+    signal(SIGHUP, SIG_IGN);
+    pid = fork();
+    if (pid > 0) exit(0);          /* 세션 리더 종료 → 제어 터미널 분리 */
+    umask(0);
+    int fd = open("/dev/null", O_RDWR);
+    if (fd >= 0) {
+        dup2(fd, STDIN_FILENO);
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        if (fd > STDERR_FILENO) close(fd);
+    }
 }
 
-/* GET /cds/stream : 공유 상태를 1초마다 push (연결 종료 시 write 실패로 탈출) */
-static void stream_cds(int fd)
-{
-	sse_begin(fd);
-	for (;;) {
-		char ev[96];
-		pthread_mutex_lock(&g_lock);
-		int n = snprintf(ev, sizeof ev,
-			"event: cds\ndata: {\"value\":%d,\"state\":\"%s\"}\n\n",
-			g_cds_value, g_cds_state);
-		pthread_mutex_unlock(&g_lock);
-		if (write(fd, ev, n) <= 0)
-			break;
-		sleep(1);
-	}
-}
-
-/* GET /log/stream : 링버퍼를 커서로 따라가며 새 로그를 push */
-static void stream_log(int fd)
-{
-	sse_begin(fd);
-	unsigned long cur;
-	pthread_mutex_lock(&g_lock);
-	cur = g_log_head;                 /* 구독 시점 이후 로그만 전송 */
-	pthread_mutex_unlock(&g_lock);
-
-	for (;;) {
-		char line[256];
-		int have = 0;
-		pthread_mutex_lock(&g_lock);
-		if (cur < g_log_head) {
-			if (g_log_head - cur > LOG_CAP)      /* 밀린 경우 최신 쪽으로 점프 */
-				cur = g_log_head - LOG_CAP;
-			snprintf(line, sizeof line, "event: log\ndata: %s\n\n",
-			         g_logbuf[cur % LOG_CAP]);
-			cur++;
-			have = 1;
-		}
-		pthread_mutex_unlock(&g_lock);
-
-		if (have) {
-			if (write(fd, line, strlen(line)) <= 0)
-				break;
-		} else {
-			msleep(200);
-		}
-	}
-}
-
-/* ------------------------------- 라우팅 -------------------------------- */
-/* 반환: 1=일반 응답 후 연결 종료, 0=SSE 등으로 핸들러가 직접 마감 */
-static void route(int fd, const char *method, const char *path)
-{
-	int is_post = strcmp(method, "POST") == 0;
-	int is_get  = strcmp(method, "GET")  == 0;
-
-	/* 브라우저 fetch preflight */
-	if (strcmp(method, "OPTIONS") == 0) {
-		http_send(fd, "204 No Content", "text/plain", NULL);
-		return;
-	}
-
-	/* ---- GET 조회/스트림/UI ---- */
-	if (is_get && strcmp(path, "/") == 0)            { serve_index(fd); return; }
-	if (is_get && strcmp(path, "/status") == 0)      { send_status(fd); return; }
-	if (is_get && strcmp(path, "/cds/stream") == 0)  { stream_cds(fd);  return; }
-	if (is_get && strcmp(path, "/log/stream") == 0)  { stream_log(fd);  return; }
-
-	/* ---- POST 제어 ---- */
-	if (is_post && strcmp(path, "/led/on") == 0) {
-		led_release();
-		pthread_mutex_lock(&g_lock); led_on(); g_led_mode = LED_ON; pthread_mutex_unlock(&g_lock);
-		send_ok(fd, "{\"ok\":true,\"led\":\"on\"}"); return;
-	}
-	if (is_post && strcmp(path, "/led/off") == 0) {
-		led_release();
-		pthread_mutex_lock(&g_lock); led_off(); g_led_mode = LED_OFF; pthread_mutex_unlock(&g_lock);
-		send_ok(fd, "{\"ok\":true,\"led\":\"off\"}"); return;
-	}
-	if (is_post && strcmp(path, "/led/blink/on") == 0) {
-		led_release();
-		g_blink_run = 1; pthread_create(&g_blink_tid, NULL, blink_fn, NULL);
-		pthread_mutex_lock(&g_lock); g_led_mode = LED_BLINK; pthread_mutex_unlock(&g_lock);
-		send_ok(fd, "{\"ok\":true,\"led\":\"blink\"}"); return;
-	}
-	if (is_post && strcmp(path, "/led/blink/off") == 0) {
-		stop_blink();
-		pthread_mutex_lock(&g_lock); led_off(); g_led_mode = LED_OFF; pthread_mutex_unlock(&g_lock);
-		send_ok(fd, "{\"ok\":true,\"led\":\"off\"}"); return;
-	}
-	if (is_post && strcmp(path, "/cds/on") == 0) {
-		led_release();
-		g_cds_run = 1; pthread_create(&g_cds_tid, NULL, cds_fn, NULL);
-		pthread_mutex_lock(&g_lock); g_led_mode = LED_CDS; pthread_mutex_unlock(&g_lock);
-		send_ok(fd, "{\"ok\":true,\"cds\":\"on\"}"); return;
-	}
-	if (is_post && strcmp(path, "/cds/off") == 0) {
-		stop_cds();
-		pthread_mutex_lock(&g_lock); led_off(); g_led_mode = LED_OFF; pthread_mutex_unlock(&g_lock);
-		send_ok(fd, "{\"ok\":true,\"cds\":\"off\"}"); return;
-	}
-	if (is_post && strcmp(path, "/buzzer/on") == 0) {
-		if (!g_buzz_run) { g_buzz_run = 1; g_buzz_on = 1; pthread_create(&g_buzz_tid, NULL, buzz_fn, NULL); }
-		send_ok(fd, "{\"ok\":true,\"buzzer\":\"on\"}"); return;
-	}
-	if (is_post && strcmp(path, "/buzzer/off") == 0) {
-		stop_buzz();
-		send_ok(fd, "{\"ok\":true,\"buzzer\":\"off\"}"); return;
-	}
-	if (is_post && strcmp(path, "/fnd/on") == 0) {
-		if (!g_fnd_run) { g_fnd_run = 1; pthread_create(&g_fnd_tid, NULL, fnd_fn, NULL); }
-		send_ok(fd, "{\"ok\":true,\"fnd\":\"on\"}"); return;
-	}
-	if (is_post && strcmp(path, "/fnd/off") == 0) {
-		stop_fnd();
-		send_ok(fd, "{\"ok\":true,\"fnd\":\"off\"}"); return;
-	}
-	if (is_post && strcmp(path, "/log/on") == 0) {
-		pthread_mutex_lock(&g_lock); g_log_on = 1; pthread_mutex_unlock(&g_lock);
-		send_ok(fd, "{\"ok\":true,\"log\":\"on\"}"); return;
-	}
-	if (is_post && strcmp(path, "/log/off") == 0) {
-		pthread_mutex_lock(&g_lock); g_log_on = 0; pthread_mutex_unlock(&g_lock);
-		send_ok(fd, "{\"ok\":true,\"log\":\"off\"}"); return;
-	}
-
-	/* ---- 매칭 실패 ---- */
-	if (is_post || is_get)
-		send_json(fd, "404 Not Found", "{\"ok\":false,\"error\":\"UNKNOWN_ENDPOINT\"}");
-	else
-		send_json(fd, "405 Method Not Allowed", "{\"ok\":false,\"error\":\"METHOD_NOT_ALLOWED\"}");
-}
-
-/* --------------------------- 연결 핸들러 스레드 --------------------------- */
-static void *client_fn(void *arg)
-{
-	int fd = *(int *)arg;
-	free(arg);
-
-	char buf[4096];
-	int n = recv(fd, buf, sizeof buf - 1, 0);
-	if (n <= 0) { close(fd); return NULL; }
-	buf[n] = '\0';
-
-	char method[8] = "", path[256] = "";
-	if (sscanf(buf, "%7s %255s", method, path) == 2) {
-		log_add("%s %s", method, path);
-		route(fd, method, path);
-	}
-	close(fd);
-	return NULL;
-}
-
-/* --------------------------------- main -------------------------------- */
 int main(int argc, char **argv)
 {
-	int port = (argc > 1) ? atoi(argv[1]) : 8080;
+    int port = (argc > 1) ? atoi(argv[1]) : DEFAULT_PORT;
 
-	signal(SIGPIPE, SIG_IGN);          /* 끊긴 SSE 연결에 write 시 종료 방지 */
-	load_device_lib();
+    /* libdevice.so 는 cwd 상대경로 → 데몬화 전에 절대경로로 고정 */
+    char abslib[1024] = {0};
+    if (!realpath(LIB_PATH, abslib))
+        strncpy(abslib, LIB_PATH, sizeof(abslib) - 1);
 
-	if (dev_init() < 0) {
-		fprintf(stderr, "device_init 실패 — 서버 기동 중단\n");
-		exit(1);
-	}
+    daemonize();
+    openlog("devserver", LOG_PID, LOG_DAEMON);
 
-	int srv = socket(AF_INET, SOCK_STREAM, 0);
-	if (srv < 0) { perror("socket"); exit(1); }
-	int yes = 1;
-	setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+    g_lib = dlopen(abslib, RTLD_NOW);
+    if (!g_lib) { syslog(LOG_ERR, "dlopen: %s", dlerror()); return 1; }
+    bind_symbols();
+    if (!dev_init || !dev_cleanup || !led_on || !led_off || !led_bright ||
+        !buzzer_tone || !buzzer_off || !cds_read || !fnd_display || !fnd_clear) {
+        syslog(LOG_ERR, "dlsym: missing symbol"); return 1;
+    }
+    if (dev_init() != 0) { syslog(LOG_ERR, "device_init failed"); return 1; }
 
-	struct sockaddr_in addr = {0};
-	addr.sin_family      = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port        = htons(port);
+    int srv = socket(AF_INET, SOCK_STREAM, 0);
+    if (srv < 0) { syslog(LOG_ERR, "socket"); return 1; }
+    int opt = 1;
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-	if (bind(srv, (struct sockaddr *)&addr, sizeof addr) < 0) { perror("bind"); exit(1); }
-	if (listen(srv, 16) < 0) { perror("listen"); exit(1); }
-	printf("HTTP 서버 시작: http://<RPi-IP>:%d/\n", port);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)port);
 
-	for (;;) {
-		int *c = malloc(sizeof(int));
-		if (!c) continue;
-		*c = accept(srv, NULL, NULL);
-		if (*c < 0) { free(c); continue; }
-		pthread_t t;
-		pthread_create(&t, NULL, client_fn, c);
-		pthread_detach(t);
-	}
+    if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        syslog(LOG_ERR, "bind: port %d", port); return 1;
+    }
+    if (listen(srv, 8) < 0) { syslog(LOG_ERR, "listen"); return 1; }
+    syslog(LOG_INFO, "devserver listening on port %d", port);
 
-	dev_cleanup();
-	dlclose(g_lib);
-	return 0;
+    for (;;) {
+        int c = accept(srv, NULL, NULL);
+        if (c < 0) continue;
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, client_thread, (void *)(intptr_t)c) != 0)
+            close(c);
+        else
+            pthread_detach(tid);
+    }
+
+    dev_cleanup();
+    dlclose(g_lib);
+    closelog();
+    return 0;
 }
