@@ -30,12 +30,20 @@ void *cds_thread(void *arg)
     while (g_cds_run) {
         int v, th, dark;
         pthread_mutex_lock(&g_dev);
-        v  = cds_read();                    /* AIN0 아날로그 0~255 */
+        v  = cds_read();                    /* AIN0 아날로그 0~255, -1=I2C 오류 */
         th = cds_get_threshold();
         dark = (v >= th);                   /* 임계값 이상 = 어두움 (극성 실HW 확정) */
-        if (dark) led_on();                 /* 빛 없음(어두움) → LED ON */
-        else      led_off();                /* 빛 있음(밝음)   → LED OFF */
+        if (v >= 0) {                       /* 정상값일 때만 LED 자동 제어 */
+            if (dark) led_on();             /* 빛 없음(어두움) → LED ON */
+            else      led_off();            /* 빛 있음(밝음)   → LED OFF */
+        }
         pthread_mutex_unlock(&g_dev);
+
+        if (v < 0) {                        /* 조도 읽기 실패(PCF8591 미연결/I2C 오류) → 자동 모드 중단 */
+            send_line(sock, "EVT CDS ERROR");
+            g_cds_run = 0;
+            break;
+        }
 
         char msg[64];
         snprintf(msg, sizeof(msg), "EVT CDS %d %s", v, dark ? "DARK" : "LIGHT");

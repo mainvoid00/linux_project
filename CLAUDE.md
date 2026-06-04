@@ -114,7 +114,9 @@ make ; make run                                   # → ./devserver 5000 (데몬
 
 # 크로스 (Ubuntu 빌드머신 → aarch64 RPi 타겟): 서버/라이브러리만 크로스, 클라이언트는 호스트 native
 make CROSS_COMPILE=aarch64-linux-gnu- WIRINGPI=<wiringpi-경로>
-scp devserver libdevice.so index.html pi@<RPi-IP>:~/app/   # 같은 디렉토리에 두고 그 위치에서 실행
+make send PI_HOST=<RPi-IP>                         # devserver/libdevice.so/index.html scp 전송(빌드 후)
+# 대상 변경: make send PI_HOST=<IP> PI_USER=pi PI_DIR=~/app  (기본 pi@raspberrypi:~/linux_project)
+# 수동: scp devserver libdevice.so index.html pi@<RPi-IP>:~/app/   # 같은 디렉토리에 두고 그 위치에서 실행
 ```
 
 > - 출력 바이너리명 `devserver`·`devclient` (이름이 `server/`·`client/` 디렉토리와 충돌하지 않게).
@@ -153,7 +155,10 @@ docs/{circuit.svg,circuit.png,circuit.fzz,wiring.md,gen_fritzing.py} # 회로도
 - [x] **추가기능: 실시간 서버 로그 뷰어** — 2번째 포트(기본 8080), **SSE 푸시**(`/events`) + 외부 `index.html`(일시정지/지우기/다시불러오기). `/log` 폴백 유지. 네이티브 하니스로 검증
 - [x] **서버 기능별 분리** — `server/{main,binding,command,modes,weblog}.c` + `server.h`. 빌드 통과(클라이언트는 220줄로 단일 유지)
 - [x] **Notion 설계서·API 명세서 TCP/PCF8591 최신화** 완료
-- [ ] **README.md + 실행과정 text 파일 + 개발문서(개요·일정·구현·보완)**(제출물)
+- [x] **CDS I2C lazy open** (`lib/cds.c`) — `cds_init`은 fd 예약만(`-1`), 첫 `cds_read`(=첫 `CDS ON`/`READ`) 때 1회 `wiringPiI2CSetup`. → 켜기 전엔 I2C 버스 접근 0, PCF8591 미연결이어도 서버/LED/부저/FND 정상 기동. API·binding 무변경
+- [x] **CDS 읽기 실패 시 자동 종료** (`server/modes.c` `cds_thread`) — `cds_read()`가 `-1`(I2C 오류/미연결)이면 무한 `EVT CDS -1` 스트림 대신 `EVT CDS ERROR` 1회 송신 후 `g_cds_run=0`으로 자동 모드 종료(오류값으로 LED 제어 안 함). README·개발문서·Notion API 명세서(§2.3·§3) 반영. → **devserver 재빌드 대상**
+- [x] **개발문서(.docx)** — 간편계좌관리 기획서 양식 재사용, 표지+12장(개요·배경·아키텍처·기능·모듈·프로토콜·시스템요소·결선·일정·문제해결과정·보완사항·결론). `개발문서_TCP원격장치제어시스템.docx`
+- [ ] **실행과정 text 파일**(제출물)
 - [ ] RPi 실 하드웨어 빌드·전체 동작 검증 (CDS 극성·PCF8591 주소 확정, 부저/CDS/LED/FND)
 
 ## 미확정 (실 하드웨어에서 확정)

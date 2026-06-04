@@ -23,7 +23,7 @@ int  buzzer_tone(int hz);    /* 주파수 출력. hz=0 이면 무음 */
 int  buzzer_off(void);
 
 /* 조도센서 = PCF8591 ADC(YL-40), I2C (cds.c) */
-int  cds_init(void);             /* PCF8591 I2C 핸들 오픈 */
+int  cds_init(void);             /* fd 예약만(=-1), 실제 핸들은 첫 cds_read 때 lazy open */
 int  cds_read(void);             /* AIN0 아날로그 값 0~255, -1=오류 */
 int  cds_set_threshold(int t);   /* 임계값 0~255 설정(client 제어), 범위밖 -1 */
 int  cds_get_threshold(void);    /* 현재 임계값 반환 */

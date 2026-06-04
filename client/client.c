@@ -122,14 +122,25 @@ static void menu_buzzer(void)
 static void menu_cds(void)
 {
     printf("\n-- 조도센서(CDS, PCF8591) --\n"
-           " 1) 자동연동 켜기(ON)  2) 자동연동 끄기(OFF)\n"
-           " 3) 현재값 읽기(READ)  4) 임계값 설정(THRESHOLD)\n"
+           " 1) 자동연동 켜기(ON)   2) 현재값 읽기(READ)\n"
+           " 3) 임계값 설정(THRESHOLD)\n"
            " 0) 뒤로\n");
     switch (read_int("선택> ")) {
-        case 1: send_cmd("CDS ON");   break;
-        case 2: send_cmd("CDS OFF");  break;
-        case 3: send_cmd("CDS READ"); break;
-        case 4: {
+        case 1: {
+            /* 자동연동을 켜면 서버가 매초 EVT 를 보내며 루프가 돈다.
+             * 여기서 Enter 입력까지 대기 → Enter 누르면 CDS OFF 보내고 메뉴로 빠져나간다.
+             * (이 흐름이 OFF 를 자동 처리하므로 별도 OFF 메뉴는 두지 않는다.) */
+            send_cmd("CDS ON");
+            printf("\n[CDS 자동연동 모니터링 중… 멈추려면 Enter]\n");
+            fflush(stdout);
+            char tmp[16];
+            if (fgets(tmp, sizeof(tmp), stdin)) { /* Enter(아무 줄) 대기. EOF/SIGINT면 메인 루프가 종료 처리 */ }
+            send_cmd("CDS OFF");
+            printf("[CDS 자동연동 중지]\n");
+            break;
+        }
+        case 2: send_cmd("CDS READ"); break;
+        case 3: {
             int t = read_int("임계값(0~255)> ");
             if (t >= 0 && t <= 255) {
                 char cmd[48];

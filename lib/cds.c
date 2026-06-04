@@ -15,14 +15,20 @@ static int g_threshold = 128;   /* 클라이언트에서 조절. 기본 128 (중
 
 int cds_init(void)
 {
-    g_fd = wiringPiI2CSetup(PCF8591_ADDR);
-    return (g_fd < 0) ? -1 : 0;
+    /* 부팅 시엔 I2C 버스를 건드리지 않는다 → fd 는 첫 CDS 사용 때 lazy open.
+     * PCF8591 미연결이어도 서버/LED/부저/FND 는 정상 기동 */
+    g_fd = -1;
+    return 0;
 }
 
 int cds_read(void)
 {
-    if (g_fd < 0)
-        return -1;
+    if (g_fd < 0) {
+        /* 첫 호출(= 첫 CDS ON/READ) 때만 I2C 핸들 오픈 */
+        g_fd = wiringPiI2CSetup(PCF8591_ADDR);
+        if (g_fd < 0)
+            return -1;
+    }
     /* PCF8591 은 변환에 1샘플 지연 → 채널 선택 후 더미 read 1회 버리고 읽는다 */
     wiringPiI2CWrite(g_fd, PCF8591_AIN0);
     wiringPiI2CRead(g_fd);              /* 더미 (직전 변환값) */
