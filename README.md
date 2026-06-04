@@ -224,17 +224,67 @@ lib/{device.h, common.c, led.c, buzzer.c, cds.c, fnd.c}              # libdevice
 
 ---
 
-## 하드웨어 결선 (RPi, wiringPi 핀 번호)
+## 하드웨어 결선 (RPi)
 
-| 장치 | 핀 | 비고 |
-|------|----|----|
-| LED | wPi 1 | `softPwm` 밝기 제어 |
-| 부저 | wPi 2 | passive 압전, `softTone` |
-| 7세그먼트 | SN74LS47 BCD A~D = wPi 21~24, BLANK = wPi 25 | 공통 애노드, active-LOW |
-| 조도센서 | PCF8591 I2C (기본 `0x48`) — SDA=wPi8, SCL=wPi9, 조도출력→AIN0 | `i2cdetect -y 1`로 주소 확정 |
+> 핀 표기: **물리핀**(RPi 40핀 헤더 번호) / **wPi**(wiringPi 번호). 코드의 핀 정의는
+> `lib/led.c`(LED) · `lib/buzzer.c`(부저) · `lib/fnd.c`(7세그) · `lib/cds.c`(I2C) 상단에 있다.
+> 네트리스트 원본·회로도: `docs/wiring.md`, `docs/circuit.{svg,png}`.
 
-> SN74LS47의 `L̄T̄`·`R̄B̄Ī`·`VCC`·`COM`은 5V 직결 (`L̄T̄` floating 시 전 세그먼트 ghosting 발생).
-> CDS 극성(`값 >= 임계값` = 어두움)은 분압 결선 방향에 따라 반전될 수 있어 실측 후 비교부호 확정.
+### 신호선 한눈에
+
+| 장치 | RPi 물리핀 | wPi | 연결 대상 | 비고 |
+|------|-----------|-----|-----------|------|
+| LED | 12 | **1** | 330Ω → LED(+) | `softPwm` 밝기 3단계 |
+| 부저 | 13 | **2** | Buzzer(+) | passive 압전, `softTone` |
+| 7세그 A (LSB) | 29 | **21** | SN74LS47 pin7 | BCD 입력 |
+| 7세그 B | 31 | **22** | SN74LS47 pin1 | BCD 입력 |
+| 7세그 C | 33 | **23** | SN74LS47 pin2 | BCD 입력 |
+| 7세그 D (MSB) | 35 | **24** | SN74LS47 pin6 | BCD 입력 |
+| 7세그 BLANK | 37 | **25** | SN74LS47 pin4 (B̄Ī) | HIGH=표시, LOW=소등 |
+| 조도센서 SDA | 3 | 8 (BCM2) | PCF8591 SDA | I2C 데이터 |
+| 조도센서 SCL | 5 | 9 (BCM3) | PCF8591 SCL | I2C 클럭 |
+
+### 전원 / GND
+
+| 노드 | 연결 대상 |
+|------|-----------|
+| **+5V** (RPi pin2/4) | SN74LS47 pin16(VCC) · pin3(L̄T̄) · pin5(R̄B̄Ī) · 7세그 COM(공통 애노드) · PCF8591 VCC |
+| **GND 공통** (RPi pin6 등) | RPi GND · SN74LS47 pin8 · LED(−) · 부저(−) · PCF8591 GND |
+
+> ⚠️ RPi·SN74LS47·디스플레이·PCF8591은 **반드시 GND 공통**. 안 그러면 동작이 들쭉날쭉하다.
+
+### SN74LS47 출력 → 7-세그먼트 (각 330Ω 직렬)
+
+| LS47 출력 | DIP 핀 | → 세그먼트 |
+|-----------|--------|-----------|
+| a | 13 | seg a |
+| b | 12 | seg b |
+| c | 11 | seg c |
+| d | 10 | seg d |
+| e | 9  | seg e |
+| f | 15 | seg f |
+| g | 14 | seg g |
+
+### 조도센서 — PCF8591 ADC(YL-40) I2C
+
+- I2C 주소 **`0x48`**(기본). 연결 후 `i2cdetect -y 1`로 확인 → `48`이 보여야 한다.
+- 모듈의 **P5 점퍼**로 온보드 조도센서 출력을 **AIN0** 채널에 연결(코드는 AIN0만 읽음).
+- 읽은 아날로그값 **0~255**에서 `값 >= 임계값`이면 **어두움(DARK)** → 자동연동 시 LED ON.
+  (`CDS THRESHOLD <0-255>`로 임계값 조정, 기본 극성은 실HW 검증으로 확정됨.)
+- 빌드 전 RPi에서 I2C 인터페이스 활성화 필요: `sudo raspi-config nonint do_i2c 0`.
+
+### 저항 (330Ω)
+
+- 7세그먼트 세그먼트별 **7개** + LED **1개** = **총 8개**.
+- BCD 입력·BLANK·부저·PCF8591에는 저항 불필요.
+
+### 주의사항
+
+- 디스플레이는 **공통 애노드** + SN74LS47(active-LOW) 조합. 공통 캐소드면 SN74LS48을 써야 한다.
+- SN74LS47의 `L̄T̄`(pin3)·`R̄B̄Ī`(pin5)는 **5V 직결**. floating 두면 전 세그먼트 ghosting이 생긴다.
+- RPi 3.3V 출력 → 74LS47 입력은 V_IH=2.0V라 정상 인식. 74LS47 출력은 디스플레이로만 가므로 GPIO로의 5V 역류 없음.
+
+> 참고: `docs/wiring.md`의 CDS 항목은 구버전(조도모듈 DO digitalRead, wPi0) 기준이라 위 PCF8591 I2C 결선과 다르다 — 현재 구현은 위 표가 정확하다.
 
 ---
 
