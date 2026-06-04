@@ -2,7 +2,6 @@
 #
 #   make                                  네이티브 빌드 (RPi 위에서 직접)
 #   make CROSS_COMPILE=aarch64-linux-gnu- 크로스 빌드 (서버/라이브러리 → aarch64 RPi 타겟)
-#   make run                              빌드 후 ./devserver 실행 (데몬)
 #   make send                             빌드 후 devserver/libdevice.so/index.html 를 RPi 로 scp 전송
 #                                         (대상 변경: make send PI_HOST=<RPi-IP> PI_USER=pi PI_DIR=~/app)
 #   make clean                            산출물 삭제
@@ -23,7 +22,6 @@ CROSS_COMPILE ?= aarch64-linux-gnu-
 CC      = $(CROSS_COMPILE)gcc   # 서버/라이브러리 (RPi 타겟)
 HOSTCC  = gcc                   # 클라이언트 (Ubuntu 호스트)
 CFLAGS  = -Wall -Wextra -O2
-PORT	= 5000
 
 # make send — RPi 전송 대상 (override: PI_HOST=<RPi-IP> PI_USER=pi PI_DIR=~/app)
 PI_USER ?= pi
@@ -64,9 +62,6 @@ devserver: $(SRV_SRC) server/server.h
 devclient: client/client.c
 	$(HOSTCC) $(CFLAGS) -o $@ client/client.c -lpthread
 
-run: libdevice.so devserver
-	./devserver $(PORT)
-
 # 빌드 산출물을 RPi 로 scp 전송 (같은 디렉토리에 배치 → 그 위치에서 ./devserver 실행)
 send: devserver libdevice.so
 	scp $(SEND_FILES) $(PI_USER)@$(PI_HOST):$(PI_DIR)/
@@ -75,4 +70,4 @@ send: devserver libdevice.so
 clean:
 	rm -f devserver devclient libdevice.so
 
-.PHONY: all run send clean
+.PHONY: all send clean

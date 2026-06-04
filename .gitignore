@@ -7,3 +7,12 @@
 # 에디터 임시파일
 *.swp
 *~
+
+# OS 메타파일
+.DS_Store
+
+# GitHub에는 소스/빌드 파일만 (client, lib, server, Makefile, README.md, index.html)
+CLAUDE.md
+/docs/
+*.docx
+*.jpg

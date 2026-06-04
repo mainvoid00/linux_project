@@ -42,16 +42,12 @@ flowchart LR
 ## 빌드
 
 이 프로젝트는 **하나의 루트 Makefile**로 3개 산출물(`devserver`·`libdevice.so`·`devclient`)을
-빌드한다. 빌드 방식은 두 가지다.
-
-| 방식 | 빌드 위치 | 언제 쓰나 |
-|------|----------|----------|
-| **네이티브** | RPi 위에서 직접 | RPi에서 gcc·wiringPi가 바로 되는 가장 단순한 경우 |
-| **크로스** | Ubuntu 빌드머신 → aarch64 | RPi가 느리거나, Ubuntu에서 한 번에 빌드·전송하고 싶을 때 |
+빌드한다. **기본(권장)은 Ubuntu 빌드머신에서의 크로스 컴파일**이고, 그게 안 될 때 RPi 위에서
+네이티브로 빌드한다.
 
 ### 산출물
 
-| 바이너리 | 빌드 대상 | 설명 | 의존성 |
+| 바이너리 | 실행 대상 | 설명 | 의존성 |
 |---------|----------|------|--------|
 | `devserver` | RPi | TCP 데몬 서버 | 소켓/pthread/dl (의존성 없이 크로스 가능) |
 | `libdevice.so` | RPi | 장치 제어 동적 라이브러리 | **wiringPi 필요** (`softPwm`/`softTone`/I2C) |
@@ -60,9 +56,34 @@ flowchart LR
 > `devclient`는 어느 방식이든 **빌드 호스트(Ubuntu x86-64)용 native**로만 빌드된다
 > (Makefile의 `HOSTCC=gcc`). RPi에는 보내지 않는다.
 
-### 방식 1 — 네이티브 (RPi 위에서 직접 빌드)
+### 방식 1 (권장) — 크로스 컴파일 후 전송 (Ubuntu 빌드머신)
 
-RPi에 소스를 올린 뒤 RPi 셸에서:
+Makefile **기본값이 이미 aarch64 크로스 설정**이라, Ubuntu에서 그냥 `make` 한 번이면
+서버·라이브러리(aarch64)와 클라이언트(native)까지 **전부 빌드**된다. 이어서 `make send` 하면 RPi로 전송 끝.
+
+```bash
+# 사전 준비 (최초 1회): aarch64 크로스 툴체인 (+ 타겟용 wiringPi)
+sudo apt update
+sudo apt install -y gcc-aarch64-linux-gnu        # aarch64-linux-gnu-gcc 제공
+# 타겟(aarch64)용 wiringPi 헤더/.so 가 /usr/aarch64-linux-gnu 에 없으면 WIRINGPI= 로 경로 지정
+
+# ① 빌드 — make 한 번이면 세 산출물 모두 생성 (별도 인자 불필요)
+make
+
+# ② 전송 — devserver·libdevice.so·index.html 을 RPi 로 scp
+make send PI_HOST=<RPi-IP>
+```
+
+> Makefile 기본값: `CROSS_COMPILE=aarch64-linux-gnu-`, `WIRINGPI=/usr/aarch64-linux-gnu`.
+> 그래서 인자 없이 `make` = 크로스 빌드다. wiringPi 경로가 다르면
+> `make WIRINGPI=/path/to/wiringpi` (구조: `include/{wiringPi.h,softPwm.h,softTone.h}`, `lib/libwiringPi.so`).
+>
+> 링크 시 `undefined reference to 'crypt'` 등이 나오면(정적 wiringPi 등):
+> `make WPI_LIBS="-lwiringPi -lcrypt -lm -lrt"`
+
+### 방식 2 (대안) — 네이티브 빌드 (크로스가 안 될 때, RPi 위에서 직접)
+
+크로스 툴체인/타겟 wiringPi 준비가 어려우면 소스를 RPi에 올려 RPi 셸에서 직접 빌드한다.
 
 ```bash
 # 사전 준비 (최초 1회): 빌드 도구 + wiringPi + I2C 활성화
@@ -70,34 +91,13 @@ sudo apt update
 sudo apt install -y build-essential wiringpi    # wiringpi 패키지가 없으면 아래 "wiringPi 설치" 참고
 sudo raspi-config nonint do_i2c 0               # I2C 인터페이스 켜기 (CDS/PCF8591용)
 
-# 빌드
-make CROSS_COMPILE= WIRINGPI=                    # 시스템 경로의 wiringPi 사용 → 세 산출물 모두 생성
-make run                                         # 빌드 후 ./devserver 5000 실행 (데몬, 로그뷰어 8080)
+# 빌드 — CROSS_COMPILE 과 WIRINGPI 를 빈 값으로 덮어써서 native gcc·시스템 wiringPi 사용
+make CROSS_COMPILE= WIRINGPI=
 ```
 
-> `CROSS_COMPILE=` `WIRINGPI=` 를 **빈 값으로 명시**해야 한다. 비우면 `gcc`(native)와
-> 시스템에 설치된 wiringPi(`-lwiringPi`)를 그대로 쓴다. 생략하면 Makefile 기본값이
-> 크로스 툴체인(`aarch64-linux-gnu-gcc`)을 찾으려다 실패한다.
-
-### 방식 2 — 크로스 컴파일 (Ubuntu 빌드머신 → aarch64 RPi 타겟)
-
-서버/라이브러리만 aarch64로 크로스, 클라이언트는 호스트 native:
-
-```bash
-# 사전 준비 (최초 1회): aarch64 크로스 툴체인 + 타겟용 wiringPi
-sudo apt update
-sudo apt install -y gcc-aarch64-linux-gnu        # aarch64-linux-gnu-gcc 제공
-# 타겟(aarch64)용 wiringPi 헤더/.so 를 준비 → WIRINGPI= 로 경로 지정 (아래 구조 참고)
-
-# 빌드
-make CROSS_COMPILE=aarch64-linux-gnu- WIRINGPI=/usr/aarch64-linux-gnu
-```
-
-> `WIRINGPI=` 경로 구조: `$(WIRINGPI)/include/{wiringPi.h,softPwm.h,softTone.h}`,
-> `$(WIRINGPI)/lib/libwiringPi.so`
->
-> 링크 시 `undefined reference to 'crypt'` 등이 나오면(정적 wiringPi 등):
-> `make ... WPI_LIBS="-lwiringPi -lcrypt -lm -lrt"`
+> 네이티브에서는 `CROSS_COMPILE=` `WIRINGPI=` 를 **빈 값으로 명시**해야 한다. 비우면 `gcc`(native)와
+> 시스템 wiringPi(`-lwiringPi`)를 쓴다. 생략하면 기본값(크로스 툴체인)을 찾으려다 실패한다.
+> 같은 머신(RPi)에서 빌드·실행하므로 `make send`는 필요 없다. 실행은 아래 "실행" 섹션 참고.
 
 ### wiringPi 설치 (RPi에 패키지가 없을 때)
 
