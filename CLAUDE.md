@@ -160,13 +160,13 @@ docs/{circuit.svg,circuit.png,circuit.fzz,wiring.md,gen_fritzing.py} # 회로도
 - [x] **개발문서(.docx)** — 간편계좌관리 기획서 양식 재사용, 표지+12장(개요·배경·아키텍처·기능·모듈·프로토콜·시스템요소·결선·일정·문제해결과정·보완사항·결론). `개발문서_TCP원격장치제어시스템.docx`
 - [x] **다중 클라 FND 충돌 해결** (`server/command.c`) — 다른 클라가 7세그 사용 중이면 `FND <n>`/`FND STOP` 모두 `ERR FND_BUSY` 거부, 소유 클라만 제어(같은 클라 재시작 허용, 연결 종료 시 자동 해제). README·개발문서·Notion(API §4·§2.4) 반영. GitHub #10. → **devserver 재빌드 대상**
 - [ ] **동영상 실연**(제출물) — 실행과정 text 파일에서 변경됨
-- [ ] RPi 실 하드웨어 빌드·전체 동작 검증 (CDS 극성·PCF8591 주소 확정, 부저/CDS/LED/FND)
+- [x] **RPi 실 하드웨어 전체 동작 검증 완료** — CDS 극성(값>=임계값=DARK→LED ON) 확정, PCF8591 `0x48` 확정, LED 3단계·부저 멜로디·FND 카운트다운 전부 정상 (GitHub #11 닫힘)
 
 ## 미확정 (실 하드웨어에서 확정)
 
 - GPIO 핀 번호: 각 `lib/*.c` 상단 — LED=1(led.c), BUZZER=2(buzzer.c), **7세그=SN74LS47** BCD A~D=wPi21~24 + BLANK=wPi25(fnd.c)
-- **CDS(PCF8591) I2C 주소**: 기본 `0x48`(cds.c) — `i2cdetect -y 1`로 확정
-- **CDS 극성**: 아날로그 `값 >= 임계값` = 어두움 가정. 조도센서 결선(분압 방향)에 따라 반전 가능 → 실측 후 비교부호 확정
+- **CDS(PCF8591) I2C 주소**: `0x48` **확정**(실HW `i2cdetect` 확인)
+- **CDS 극성**: 아날로그 `값 >= 임계값` = 어두움 **확정**(실HW 검증 — 비교부호 그대로 유지)
 - BUZZER 멜로디 곡 (현재 도레미파솔라시도 placeholder)
 - **확정됨**: 7세그 = 공통 애노드 디스플레이 + SN74LS47(active-LOW). LS47 L̄T̄(3)·R̄B̄Ī(5)·VCC(16)·COM = 5V 직결(L̄T̄ floating 시 전 세그먼트 ghosting)
 - **확정됨**: CDS = PCF8591 ADC, SDA→SDA1(wPi8/BCM2), SCL→SCL1(wPi9/BCM3), 조도출력→P5 점퍼→AIN0
