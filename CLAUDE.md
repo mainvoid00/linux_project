@@ -158,7 +158,8 @@ docs/{circuit.svg,circuit.png,circuit.fzz,wiring.md,gen_fritzing.py} # 회로도
 - [x] **CDS I2C lazy open** (`lib/cds.c`) — `cds_init`은 fd 예약만(`-1`), 첫 `cds_read`(=첫 `CDS ON`/`READ`) 때 1회 `wiringPiI2CSetup`. → 켜기 전엔 I2C 버스 접근 0, PCF8591 미연결이어도 서버/LED/부저/FND 정상 기동. API·binding 무변경
 - [x] **CDS 읽기 실패 시 자동 종료** (`server/modes.c` `cds_thread`) — `cds_read()`가 `-1`(I2C 오류/미연결)이면 무한 `EVT CDS -1` 스트림 대신 `EVT CDS ERROR` 1회 송신 후 `g_cds_run=0`으로 자동 모드 종료(오류값으로 LED 제어 안 함). README·개발문서·Notion API 명세서(§2.3·§3) 반영. → **devserver 재빌드 대상**
 - [x] **개발문서(.docx)** — 간편계좌관리 기획서 양식 재사용, 표지+12장(개요·배경·아키텍처·기능·모듈·프로토콜·시스템요소·결선·일정·문제해결과정·보완사항·결론). `개발문서_TCP원격장치제어시스템.docx`
-- [ ] **실행과정 text 파일**(제출물)
+- [x] **다중 클라 FND 충돌 해결** (`server/command.c`) — 다른 클라가 7세그 사용 중이면 `FND <n>`/`FND STOP` 모두 `ERR FND_BUSY` 거부, 소유 클라만 제어(같은 클라 재시작 허용, 연결 종료 시 자동 해제). README·개발문서·Notion(API §4·§2.4) 반영. GitHub #10. → **devserver 재빌드 대상**
+- [ ] **동영상 실연**(제출물) — 실행과정 text 파일에서 변경됨
 - [ ] RPi 실 하드웨어 빌드·전체 동작 검증 (CDS 극성·PCF8591 주소 확정, 부저/CDS/LED/FND)
 
 ## 미확정 (실 하드웨어에서 확정)
@@ -178,7 +179,7 @@ docs/{circuit.svg,circuit.png,circuit.fzz,wiring.md,gen_fritzing.py} # 회로도
 | 2. 기본 구현 | 6/2 | lib/server/client 골격, make 자동화·크로스 빌드, 회로도(SN74LS47) |
 | 3. 기능 고도화 | 6/3 | **lib 장치별 분리**, **CDS→PCF8591 I2C(임계값 제어)**, **클라이언트 시그널/번호메뉴**, 멀티클라이언트 뮤텍스 |
 | 4. 추가기능 | 6/4 | HTML 실시간 서버 로그 뷰어(2번째 포트), 실 하드웨어 동작 검증 |
-| 5. 문서·제출 | 6/5 | 개발문서(개요·일정·구현·보완), README, 실행과정 text → 15시 제출 |
+| 5. 문서·제출 | 6/5 | 개발문서(개요·일정·구현·보완), README, 동영상 실연 → 15시 제출 |
 
 ## 결정 사항
 

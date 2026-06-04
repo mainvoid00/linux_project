@@ -85,17 +85,29 @@ int handle_cmd(int sock, char *line)
     }
     else if (!strcmp(cmd, "FND")) {
         if (a1 && !strcmp(a1, "STOP")) {
-            g_fnd_run = 0;
-            pthread_mutex_lock(&g_dev); fnd_clear(); pthread_mutex_unlock(&g_dev);
-            send_line(sock, "OK FND STOP");
+            pthread_mutex_lock(&g_state);
+            if (g_fnd_run && g_fnd_sock != sock) {   /* 다른 클라가 7세그 사용 중 → 건드릴 수 없음 */
+                pthread_mutex_unlock(&g_state);
+                send_line(sock, "ERR FND_BUSY");
+            } else {
+                g_fnd_run = 0;
+                pthread_mutex_unlock(&g_state);
+                pthread_mutex_lock(&g_dev); fnd_clear(); pthread_mutex_unlock(&g_dev);
+                send_line(sock, "OK FND STOP");
+            }
         } else if (a1 && a1[0] >= '0' && a1[0] <= '9' && a1[1] == '\0') {
             pthread_mutex_lock(&g_state);
-            g_fnd_run = 0; usleep(100*1000);
-            g_fnd_sock = sock; g_fnd_run = 1;
-            pthread_create(&tid, NULL, fnd_thread, (void *)(intptr_t)(a1[0]-'0'));
-            pthread_detach(tid);
-            pthread_mutex_unlock(&g_state);
-            send_line(sock, "OK FND START");
+            if (g_fnd_run && g_fnd_sock != sock) {   /* 다른 클라가 7세그 사용 중 → 거부 */
+                pthread_mutex_unlock(&g_state);
+                send_line(sock, "ERR FND_BUSY");
+            } else {
+                g_fnd_run = 0; usleep(100*1000);     /* 같은 클라면 기존 카운트다운 재시작 */
+                g_fnd_sock = sock; g_fnd_run = 1;
+                pthread_create(&tid, NULL, fnd_thread, (void *)(intptr_t)(a1[0]-'0'));
+                pthread_detach(tid);
+                pthread_mutex_unlock(&g_state);
+                send_line(sock, "OK FND START");
+            }
         } else send_line(sock, "ERR INVALID_ARG");
     }
     else if (!strcmp(cmd, "STATUS")) {
